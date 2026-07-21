@@ -1,5 +1,9 @@
 {
   "name": "payment-ops-assistant",
   "private": true,
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "dependencies": {
+    "@prisma/client": "^7.9.0",
+    "prisma": "^7.9.0"
+  }
 }

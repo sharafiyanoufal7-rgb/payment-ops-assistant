@@ -14,6 +14,12 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.post("/transactions/upload", (_req, res) => {
+  res.json({
+    message: "Upload endpoint working",
+  });
+});
+
 app.listen(port, () => {
   console.log(`API running on http://localhost:${port}`);
 });
