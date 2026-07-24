@@ -1,27 +1,14 @@
 import path from "node:path";
-import { createRequire } from "node:module";
 import dotenv from "dotenv";
 import cors from "cors";
 import express from "express";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "../../../generated/prisma/client.js";
 dotenv.config({ path: path.resolve(process.cwd(), "../..", ".env") });
-const require = createRequire(import.meta.url);
-const multerModule = (() => {
-    try {
-        return require("multer");
-    }
-    catch {
-        return null;
-    }
-})();
-const upload = multerModule
-    ? multerModule({ storage: multerModule.memoryStorage() })
-    : {
-        single: () => (_req, _res, next) => next(),
-    };
 const app = express();
 const port = Number(process.env.PORT || 3001);
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+    adapter: undefined,
+});
 const REQUIRED_COLUMNS = [
     "transactionId",
     "amount",
@@ -103,6 +90,41 @@ function validateRow(record, rowIndex) {
         createdAt,
     };
 }
+function parseMultipartFile(req) {
+    return new Promise((resolve, reject) => {
+        const contentType = req.headers["content-type"] ?? "";
+        const boundaryMatch = contentType.match(/boundary=(.*)$/i);
+        if (!boundaryMatch) {
+            reject(new Error("Expected multipart/form-data upload"));
+            return;
+        }
+        const boundary = `--${boundaryMatch[1]}`;
+        const chunks = [];
+        req.on("data", (chunk) => {
+            chunks.push(Buffer.from(chunk));
+        });
+        req.on("end", () => {
+            const body = Buffer.concat(chunks).toString("utf8");
+            const headerIndex = body.indexOf('Content-Disposition: form-data; name="file"');
+            if (headerIndex < 0) {
+                reject(new Error("No file field found in multipart request"));
+                return;
+            }
+            const filenameStart = body.indexOf('filename="', headerIndex) + 'filename="'.length;
+            const filenameEnd = body.indexOf('"', filenameStart);
+            const fileName = body.slice(filenameStart, filenameEnd).trim();
+            const fileStart = body.indexOf("\r\n\r\n", filenameEnd) + 4;
+            const fileEnd = body.indexOf(`\r\n${boundary}--`, fileStart);
+            if (fileEnd < 0) {
+                reject(new Error("Unable to extract uploaded CSV content"));
+                return;
+            }
+            const buffer = Buffer.from(body.slice(fileStart, fileEnd), "utf8");
+            resolve({ fileName, buffer });
+        });
+        req.on("error", (error) => reject(error));
+    });
+}
 app.use(cors());
 app.use(express.json());
 app.get("/health", (_req, res) => {
@@ -111,24 +133,22 @@ app.get("/health", (_req, res) => {
         service: "payment-ops-api",
     });
 });
-app.post("/transactions/upload", upload.single("file"), async (req, res) => {
-    if (!req.file?.buffer) {
-        res.status(400).json({ message: "No file provided" });
-        return;
-    }
-    const records = parseCsvText(req.file.buffer.toString("utf8"));
-    if (!records.length) {
-        res.status(400).json({ message: "CSV file is empty" });
-        return;
-    }
-    const missingColumns = REQUIRED_COLUMNS.filter((column) => !(column in records[0]));
-    if (missingColumns.length > 0) {
-        res.status(400).json({
-            message: `Missing required CSV columns: ${missingColumns.join(", ")}`,
-        });
-        return;
-    }
+app.post("/transactions/upload", async (req, res) => {
     try {
+        const { buffer } = await parseMultipartFile(req);
+        const records = parseCsvText(buffer.toString("utf8"));
+        if (!records.length) {
+            res.status(400).json({ message: "CSV file is empty" });
+            return;
+        }
+        const columns = Object.keys(records[0]);
+        const missingColumns = REQUIRED_COLUMNS.filter((column) => !columns.includes(column));
+        if (missingColumns.length > 0) {
+            res.status(400).json({
+                message: `Missing required CSV columns: ${missingColumns.join(", ")}`,
+            });
+            return;
+        }
         const validatedRecords = records.map((record, index) => validateRow(record, index + 2));
         await prisma.transaction.createMany({
             data: validatedRecords,

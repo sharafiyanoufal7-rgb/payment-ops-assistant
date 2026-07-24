@@ -1,9 +1,20 @@
 import { useState } from 'react'
 
+type TransactionRecord = {
+  id: string
+  transactionId: string
+  amount: number
+  currency: string
+  status: string
+  failureReason: string | null
+  createdAt: string
+}
+
 function App() {
   const [activePage, setActivePage] = useState<'dashboard' | 'transactions' | 'upload'>('dashboard')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [uploadMessage, setUploadMessage] = useState('')
+  const [transactions, setTransactions] = useState<TransactionRecord[]>([])
 
   const handleUpload = async () => {
     if (!selectedFile) {
@@ -11,20 +22,25 @@ function App() {
       return
     }
 
+    const formData = new FormData()
+    formData.append('file', selectedFile)
+
     try {
       const response = await fetch('http://localhost:3001/transactions/upload', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          fileName: selectedFile.name,
-        }),
+        body: formData,
       })
 
       const data = await response.json()
 
-      setUploadMessage(data.message ?? 'Upload successful')
+      if (!response.ok) {
+        setUploadMessage(data.message ?? 'Upload failed.')
+        return
+      }
+
+      setUploadMessage(`${data.importedCount ?? 0} records imported successfully`)
+      setTransactions(data.records ?? [])
+      setActivePage('transactions')
     } catch (error) {
       setUploadMessage('Upload failed. Please make sure the backend is running.')
       console.error(error)
@@ -71,7 +87,35 @@ function App() {
         {activePage === 'transactions' && (
           <div className="page-card">
             <h2>Transactions</h2>
-            <p>Transaction list will appear here.</p>
+
+            {transactions.length === 0 ? (
+              <p>No imported transactions yet.</p>
+            ) : (
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Transaction ID</th>
+                      <th>Amount</th>
+                      <th>Currency</th>
+                      <th>Status</th>
+                      <th>Created At</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transactions.map((transaction) => (
+                      <tr key={transaction.id}>
+                        <td>{transaction.transactionId}</td>
+                        <td>{transaction.amount}</td>
+                        <td>{transaction.currency}</td>
+                        <td>{transaction.status}</td>
+                        <td>{new Date(transaction.createdAt).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -82,6 +126,7 @@ function App() {
               <span>Choose File</span>
               <input
                 type="file"
+                accept=".csv"
                 onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
               />
             </label>

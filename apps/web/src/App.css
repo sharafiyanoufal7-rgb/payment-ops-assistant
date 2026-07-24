@@ -82,6 +82,29 @@
   font-weight: 600;
 }
 
+.table-wrapper {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+
+th,
+td {
+  padding: 12px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+}
+
+th {
+  font-size: 14px;
+  text-transform: uppercase;
+  color: #475569;
+}
+
 @media (max-width: 768px) {
   .app-shell {
     grid-template-columns: 1fr;
