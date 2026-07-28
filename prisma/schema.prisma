@@ -21,3 +21,24 @@ model Transaction {
   failureReason String?
   createdAt     DateTime
 }
+
+model Import {
+  id              String        @id @default(cuid())
+  filename        String
+  status          String
+  totalRows       Int
+  successfulRows  Int
+  failedRows      Int
+  createdAt       DateTime      @default(now())
+  importErrors    ImportError[]
+}
+
+model ImportError {
+  id        String   @id @default(cuid())
+  importId  String
+  rowNumber Int
+  message   String
+  createdAt DateTime @default(now())
+
+  import    Import   @relation(fields: [importId], references: [id], onDelete: Cascade)
+}

@@ -3,11 +3,12 @@ import dotenv from "dotenv";
 import cors from "cors";
 import express from "express";
 import { PrismaClient } from "../../../generated/prisma/client.js";
+import { getImportStatus } from "./importService.js";
 dotenv.config({ path: path.resolve(process.cwd(), "../..", ".env") });
 const app = express();
 const port = Number(process.env.PORT || 3001);
 const prisma = new PrismaClient({
-    adapter: undefined,
+    accelerateUrl: process.env.DATABASE_URL,
 });
 const REQUIRED_COLUMNS = [
     "transactionId",
@@ -125,6 +126,95 @@ function parseMultipartFile(req) {
         req.on("error", (error) => reject(error));
     });
 }
+async function handleImportUpload(req, res) {
+    try {
+        const { fileName, buffer } = await parseMultipartFile(req);
+        const importRecord = await prisma.import.create({
+            data: {
+                filename: fileName,
+                status: "PROCESSING",
+                totalRows: 0,
+                successfulRows: 0,
+                failedRows: 0,
+            },
+        });
+        const records = parseCsvText(buffer.toString("utf8"));
+        if (!records.length) {
+            await prisma.import.update({
+                where: { id: importRecord.id },
+                data: {
+                    status: "FAILED",
+                    totalRows: 0,
+                    successfulRows: 0,
+                    failedRows: 0,
+                },
+            });
+            await prisma.importError.createMany({
+                data: [{
+                        importId: importRecord.id,
+                        rowNumber: 1,
+                        message: "CSV file is empty",
+                    }],
+            });
+            res.status(400).json({ message: "CSV file is empty" });
+            return;
+        }
+        const columns = Object.keys(records[0]);
+        const missingColumns = REQUIRED_COLUMNS.filter((column) => !columns.includes(column));
+        const validationErrors = [];
+        const validTransactions = [];
+        if (missingColumns.length > 0) {
+            validationErrors.push({
+                rowNumber: 1,
+                message: `Missing required CSV columns: ${missingColumns.join(", ")}`,
+            });
+        }
+        else {
+            records.forEach((record, index) => {
+                try {
+                    validTransactions.push(validateRow(record, index + 2));
+                }
+                catch (error) {
+                    validationErrors.push({
+                        rowNumber: index + 2,
+                        message: error instanceof Error ? error.message : "Unknown validation error",
+                    });
+                }
+            });
+        }
+        if (validTransactions.length > 0) {
+            await prisma.transaction.createMany({
+                data: validTransactions,
+                skipDuplicates: true,
+            });
+        }
+        const successfulRows = validTransactions.length;
+        const failedRows = validationErrors.length;
+        if (validationErrors.length > 0) {
+            await prisma.importError.createMany({
+                data: validationErrors.map((error) => ({
+                    importId: importRecord.id,
+                    rowNumber: error.rowNumber,
+                    message: error.message,
+                })),
+            });
+        }
+        const updatedImport = await prisma.import.update({
+            where: { id: importRecord.id },
+            data: {
+                status: getImportStatus(successfulRows, failedRows),
+                totalRows: records.length,
+                successfulRows,
+                failedRows,
+            },
+        });
+        res.status(201).json(updatedImport);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to import transactions";
+        res.status(400).json({ message });
+    }
+}
 app.use(cors());
 app.use(express.json());
 app.get("/health", (_req, res) => {
@@ -133,46 +223,32 @@ app.get("/health", (_req, res) => {
         service: "payment-ops-api",
     });
 });
-app.post("/transactions/upload", async (req, res) => {
-    try {
-        const { buffer } = await parseMultipartFile(req);
-        const records = parseCsvText(buffer.toString("utf8"));
-        if (!records.length) {
-            res.status(400).json({ message: "CSV file is empty" });
-            return;
-        }
-        const columns = Object.keys(records[0]);
-        const missingColumns = REQUIRED_COLUMNS.filter((column) => !columns.includes(column));
-        if (missingColumns.length > 0) {
-            res.status(400).json({
-                message: `Missing required CSV columns: ${missingColumns.join(", ")}`,
-            });
-            return;
-        }
-        const validatedRecords = records.map((record, index) => validateRow(record, index + 2));
-        await prisma.transaction.createMany({
-            data: validatedRecords,
-            skipDuplicates: true,
-        });
-        const importedRecords = await prisma.transaction.findMany({
-            where: {
-                transactionId: {
-                    in: validatedRecords.map((record) => record.transactionId),
+app.post("/api/imports", handleImportUpload);
+app.post("/transactions/upload", handleImportUpload);
+app.get("/api/imports", async (_req, res) => {
+    const imports = await prisma.import.findMany({
+        orderBy: {
+            createdAt: "desc",
+        },
+    });
+    res.json(imports);
+});
+app.get("/api/imports/:id", async (req, res) => {
+    const importRecord = await prisma.import.findUnique({
+        where: { id: req.params.id },
+        include: {
+            importErrors: {
+                orderBy: {
+                    rowNumber: "asc",
                 },
             },
-            orderBy: {
-                createdAt: "asc",
-            },
-        });
-        res.json({
-            importedCount: importedRecords.length,
-            records: importedRecords,
-        });
+        },
+    });
+    if (!importRecord) {
+        res.status(404).json({ message: "Import not found" });
+        return;
     }
-    catch (error) {
-        const message = error instanceof Error ? error.message : "Unable to import transactions";
-        res.status(400).json({ message });
-    }
+    res.json(importRecord);
 });
 app.listen(port, () => {
     console.log(`API running on http://localhost:${port}`);

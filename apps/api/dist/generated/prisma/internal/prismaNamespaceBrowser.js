@@ -48,7 +48,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NullsOrder = exports.QueryMode = exports.SortOrder = exports.TransactionScalarFieldEnum = exports.TransactionIsolationLevel = exports.ModelName = exports.AnyNull = exports.JsonNull = exports.DbNull = exports.NullTypes = exports.Decimal = void 0;
+exports.NullsOrder = exports.QueryMode = exports.SortOrder = exports.ImportErrorScalarFieldEnum = exports.ImportScalarFieldEnum = exports.TransactionScalarFieldEnum = exports.TransactionIsolationLevel = exports.ModelName = exports.AnyNull = exports.JsonNull = exports.DbNull = exports.NullTypes = exports.Decimal = void 0;
 const runtime = __importStar(require("@prisma/client/runtime/index-browser"));
 exports.Decimal = runtime.Decimal;
 exports.NullTypes = {
@@ -75,7 +75,9 @@ exports.JsonNull = runtime.JsonNull;
  */
 exports.AnyNull = runtime.AnyNull;
 exports.ModelName = {
-    Transaction: 'Transaction'
+    Transaction: 'Transaction',
+    Import: 'Import',
+    ImportError: 'ImportError'
 };
 /*
  * Enums
@@ -93,6 +95,22 @@ exports.TransactionScalarFieldEnum = {
     currency: 'currency',
     status: 'status',
     failureReason: 'failureReason',
+    createdAt: 'createdAt'
+};
+exports.ImportScalarFieldEnum = {
+    id: 'id',
+    filename: 'filename',
+    status: 'status',
+    totalRows: 'totalRows',
+    successfulRows: 'successfulRows',
+    failedRows: 'failedRows',
+    createdAt: 'createdAt'
+};
+exports.ImportErrorScalarFieldEnum = {
+    id: 'id',
+    importId: 'importId',
+    rowNumber: 'rowNumber',
+    message: 'message',
     createdAt: 'createdAt'
 };
 exports.SortOrder = {
