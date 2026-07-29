@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { fetchImports, type ImportListResponse } from './api.js'
+import { ImportsTable } from './ImportsTable.js'
 
 type TransactionRecord = {
   id: string
@@ -11,10 +13,33 @@ type TransactionRecord = {
 }
 
 function App() {
-  const [activePage, setActivePage] = useState<'dashboard' | 'transactions' | 'upload'>('dashboard')
+  const [activePage, setActivePage] = useState<'dashboard' | 'transactions' | 'imports' | 'upload'>('dashboard')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [uploadMessage, setUploadMessage] = useState('')
+  const [toastMessage, setToastMessage] = useState('')
+  const [uploading, setUploading] = useState(false)
   const [transactions, setTransactions] = useState<TransactionRecord[]>([])
+  const [importsResponse, setImportsResponse] = useState<ImportListResponse | null>(null)
+  const [importsLoading, setImportsLoading] = useState(false)
+  const [importsError, setImportsError] = useState('')
+  const [importsPage, setImportsPage] = useState(1)
+
+  useEffect(() => {
+    if (activePage !== 'imports') {
+      return
+    }
+
+    setImportsLoading(true)
+    fetchImports({ page: importsPage })
+      .then((data) => {
+        setImportsResponse(data)
+        setImportsError('')
+      })
+      .catch(() => {
+        setImportsError('Unable to load imports. Please try again later.')
+      })
+      .finally(() => setImportsLoading(false))
+  }, [activePage, importsPage])
 
   const handleUpload = async () => {
     if (!selectedFile) {
@@ -22,6 +47,7 @@ function App() {
       return
     }
 
+    setUploading(true)
     const formData = new FormData()
     formData.append('file', selectedFile)
 
@@ -35,14 +61,22 @@ function App() {
 
       if (!response.ok) {
         setUploadMessage(data.message ?? 'Upload failed.')
+        setUploading(false)
         return
       }
 
-      setUploadMessage(`${data.importedCount ?? 0} records imported successfully`)
+      const count = data.successfulRows ?? data.importedCount ?? (data.records ? data.records.length : 0)
+      const successText = `${count} records imported successfully`
+      setUploadMessage(successText)
       setTransactions(data.records ?? [])
+      setToastMessage(successText)
       setActivePage('transactions')
+      setUploading(false)
+      // auto-dismiss toast
+      window.setTimeout(() => setToastMessage(''), 3000)
     } catch (error) {
       setUploadMessage('Upload failed. Please make sure the backend is running.')
+      setUploading(false)
       console.error(error)
     }
   }
@@ -68,6 +102,13 @@ function App() {
           </button>
           <button
             type="button"
+            className={activePage === 'imports' ? 'active' : ''}
+            onClick={() => setActivePage('imports')}
+          >
+            Imports
+          </button>
+          <button
+            type="button"
             className={activePage === 'upload' ? 'active' : ''}
             onClick={() => setActivePage('upload')}
           >
@@ -81,6 +122,22 @@ function App() {
           <div className="page-card">
             <h2>Dashboard</h2>
             <p>Overview for payment operations.</p>
+          </div>
+        )}
+
+        {activePage === 'imports' && (
+          <div className="page-card">
+            <h2>Imports</h2>
+
+            {importsLoading ? (
+              <p>Loading imports…</p>
+            ) : importsError ? (
+              <p>{importsError}</p>
+            ) : importsResponse ? (
+              <ImportsTable importsResponse={importsResponse} onPageChange={setImportsPage} />
+            ) : (
+              <p>No imports to display.</p>
+            )}
           </div>
         )}
 
@@ -132,10 +189,11 @@ function App() {
             </label>
 
             <button type="button" className="upload-button" onClick={handleUpload}>
-              Upload Button
+              {uploading ? 'Uploading…' : 'Upload Button'}
             </button>
 
             {uploadMessage && <p className="upload-message">{uploadMessage}</p>}
+            {toastMessage && <div className="toast success">{toastMessage}</div>}
           </div>
         )}
       </section>

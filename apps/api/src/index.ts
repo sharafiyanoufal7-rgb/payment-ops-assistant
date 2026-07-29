@@ -1,17 +1,17 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import dotenv from "dotenv";
 import cors from "cors";
 import express from "express";
 import { PrismaClient } from "../../../generated/prisma/client.js";
 import { getImportStatus, type ImportStatus } from "./importService.js";
+import { listImports } from "./importRepository.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../..", ".env") });
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
-const prisma = new PrismaClient({
-  accelerateUrl: process.env.DATABASE_URL,
-} as any);
+let prisma: PrismaClient | null = null;
 
 const REQUIRED_COLUMNS = [
   "transactionId",
@@ -20,6 +20,37 @@ const REQUIRED_COLUMNS = [
   "status",
   "createdAt",
 ] as const;
+
+type StoredImport = {
+  id: string;
+  filename: string;
+  status: ImportStatus;
+  totalRows: number;
+  successfulRows: number;
+  failedRows: number;
+  createdAt: Date;
+  importErrors: ImportValidationError[];
+};
+
+const localImports: StoredImport[] = [];
+const localTransactions: TransactionInput[] = [];
+
+async function initializePrisma() {
+  try {
+    const client = new PrismaClient({
+      accelerateUrl: process.env.DATABASE_URL,
+    } as any);
+
+    await client.$connect();
+    prisma = client;
+    console.log("Prisma connected successfully");
+  } catch (error) {
+    console.warn("Prisma unavailable; falling back to in-memory storage.", error);
+    prisma = null;
+  }
+}
+
+initializePrisma();
 
 type CsvRow = Record<string, string>;
 type TransactionInput = {
@@ -175,36 +206,65 @@ function parseMultipartFile(req: express.Request): Promise<{ fileName: string; b
 async function handleImportUpload(req: express.Request, res: express.Response) {
   try {
     const { fileName, buffer } = await parseMultipartFile(req);
-    const importRecord = await prisma.import.create({
-      data: {
-        filename: fileName,
-        status: "PROCESSING" as ImportStatus,
-        totalRows: 0,
-        successfulRows: 0,
-        failedRows: 0,
-      },
-    });
+    const importRecord = prisma
+      ? (await prisma.import.create({
+          data: {
+            filename: fileName,
+            status: "PROCESSING" as ImportStatus,
+            totalRows: 0,
+            successfulRows: 0,
+            failedRows: 0,
+          },
+        })) as StoredImport
+      : {
+          id: crypto.randomUUID(),
+          filename: fileName,
+          status: "PROCESSING" as ImportStatus,
+          totalRows: 0,
+          successfulRows: 0,
+          failedRows: 0,
+          createdAt: new Date(),
+          importErrors: [],
+        };
+
+    if (!prisma) {
+      localImports.push(importRecord as StoredImport);
+    }
 
     const records = parseCsvText(buffer.toString("utf8"));
 
     if (!records.length) {
-      await prisma.import.update({
-        where: { id: importRecord.id },
-        data: {
-          status: "FAILED" as ImportStatus,
-          totalRows: 0,
-          successfulRows: 0,
-          failedRows: 0,
-        },
-      });
+      if (prisma) {
+        await prisma.import.update({
+          where: { id: importRecord.id },
+          data: {
+            status: "FAILED" as ImportStatus,
+            totalRows: 0,
+            successfulRows: 0,
+            failedRows: 0,
+          },
+        });
 
-      await prisma.importError.createMany({
-        data: [{
-          importId: importRecord.id,
-          rowNumber: 1,
-          message: "CSV file is empty",
-        }],
-      });
+        await prisma.importError.createMany({
+          data: [{
+            importId: importRecord.id,
+            rowNumber: 1,
+            message: "CSV file is empty",
+          }],
+        });
+      } else {
+        const stored = localImports.find((entry) => entry.id === importRecord.id);
+        if (stored) {
+          stored.status = "FAILED" as ImportStatus;
+          stored.totalRows = 0;
+          stored.successfulRows = 0;
+          stored.failedRows = 0;
+          stored.importErrors.push({
+            rowNumber: 1,
+            message: "CSV file is empty",
+          });
+        }
+      }
 
       res.status(400).json({ message: "CSV file is empty" });
       return;
@@ -233,37 +293,71 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
       });
     }
 
-    if (validTransactions.length > 0) {
-      await prisma.transaction.createMany({
-        data: validTransactions,
-        skipDuplicates: true,
-      });
-    }
-
     const successfulRows = validTransactions.length;
     const failedRows = validationErrors.length;
 
-    if (validationErrors.length > 0) {
-      await prisma.importError.createMany({
-        data: validationErrors.map((error) => ({
-          importId: importRecord.id,
-          rowNumber: error.rowNumber,
-          message: error.message,
-        })),
-      });
+    if (prisma) {
+      if (validTransactions.length > 0) {
+        await prisma.transaction.createMany({
+          data: validTransactions,
+          skipDuplicates: true,
+        });
+      }
+    } else {
+      localTransactions.push(...validTransactions);
     }
 
-    const updatedImport = await prisma.import.update({
-      where: { id: importRecord.id },
-      data: {
-        status: getImportStatus(successfulRows, failedRows) as ImportStatus,
-        totalRows: records.length,
-        successfulRows,
-        failedRows,
-      },
-    });
+    if (validationErrors.length > 0) {
+      if (prisma) {
+        await prisma.importError.createMany({
+          data: validationErrors.map((error) => ({
+            importId: importRecord.id,
+            rowNumber: error.rowNumber,
+            message: error.message,
+          })),
+        });
+      } else {
+        const stored = localImports.find((entry) => entry.id === importRecord.id);
+        if (stored) {
+          stored.importErrors.push(...validationErrors);
+        }
+      }
+    }
 
-    res.status(201).json(updatedImport);
+    let updatedImport;
+
+    if (prisma) {
+      updatedImport = await prisma.import.update({
+        where: { id: importRecord.id },
+        data: {
+          status: getImportStatus(successfulRows, failedRows) as ImportStatus,
+          totalRows: records.length,
+          successfulRows,
+          failedRows,
+        },
+      });
+    } else {
+      const stored = localImports.find((entry) => entry.id === importRecord.id);
+      if (stored) {
+        stored.status = getImportStatus(successfulRows, failedRows);
+        stored.totalRows = records.length;
+        stored.successfulRows = successfulRows;
+        stored.failedRows = failedRows;
+        updatedImport = stored;
+      }
+    }
+
+    const responseRecords = validTransactions.map((t) => ({
+      id: t.transactionId,
+      transactionId: t.transactionId,
+      amount: t.amount,
+      currency: t.currency,
+      status: t.status,
+      failureReason: t.failureReason,
+      createdAt: t.createdAt.toISOString(),
+    }));
+
+    res.status(201).json({ ...updatedImport, records: responseRecords });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to import transactions";
     res.status(400).json({ message });
@@ -283,27 +377,43 @@ app.get("/health", (_req, res) => {
 app.post("/api/imports", handleImportUpload);
 app.post("/transactions/upload", handleImportUpload);
 
-app.get("/api/imports", async (_req, res) => {
-  const imports = await prisma.import.findMany({
-    orderBy: {
-      createdAt: "desc",
-    },
-  });
+app.get("/api/imports", async (req, res) => {
+  const query = {
+    page: Number(req.query.page ?? 1),
+    pageSize: Number(req.query.pageSize ?? 10),
+    search: typeof req.query.search === "string" ? req.query.search : undefined,
+    status: typeof req.query.status === "string" ? req.query.status : undefined,
+    sortBy: typeof req.query.sortBy === "string" ? req.query.sortBy : undefined,
+    sortOrder: typeof req.query.sortOrder === "string" ? req.query.sortOrder : undefined,
+  };
 
+  const imports = await listImports(prisma, query);
   res.json(imports);
 });
 
 app.get("/api/imports/:id", async (req, res) => {
-  const importRecord = await prisma.import.findUnique({
-    where: { id: req.params.id },
-    include: {
-      importErrors: {
-        orderBy: {
-          rowNumber: "asc",
+  if (prisma) {
+    const importRecord = await prisma.import.findUnique({
+      where: { id: req.params.id },
+      include: {
+        importErrors: {
+          orderBy: {
+            rowNumber: "asc",
+          },
         },
       },
-    },
-  });
+    });
+
+    if (!importRecord) {
+      res.status(404).json({ message: "Import not found" });
+      return;
+    }
+
+    res.json(importRecord);
+    return;
+  }
+
+  const importRecord = localImports.find((entry) => entry.id === req.params.id);
 
   if (!importRecord) {
     res.status(404).json({ message: "Import not found" });
