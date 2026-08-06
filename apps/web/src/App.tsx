@@ -1,16 +1,8 @@
 import { useEffect, useState } from 'react'
-import { fetchImports, type ImportListResponse } from './api.js'
+import { fetchImports, fetchTransactionsSummary, type ImportListResponse, type TransactionsSummary } from './api.js'
 import { ImportsTable } from './ImportsTable.js'
-
-type TransactionRecord = {
-  id: string
-  transactionId: string
-  amount: number
-  currency: string
-  status: string
-  failureReason: string | null
-  createdAt: string
-}
+import { SummaryCards } from './SummaryCards.js'
+import { TransactionsTable } from './TransactionsTable.js'
 
 function App() {
   const [activePage, setActivePage] = useState<'dashboard' | 'transactions' | 'imports' | 'upload'>('dashboard')
@@ -18,11 +10,13 @@ function App() {
   const [uploadMessage, setUploadMessage] = useState('')
   const [toastMessage, setToastMessage] = useState('')
   const [uploading, setUploading] = useState(false)
-  const [transactions, setTransactions] = useState<TransactionRecord[]>([])
   const [importsResponse, setImportsResponse] = useState<ImportListResponse | null>(null)
   const [importsLoading, setImportsLoading] = useState(false)
   const [importsError, setImportsError] = useState('')
   const [importsPage, setImportsPage] = useState(1)
+  const [summary, setSummary] = useState<TransactionsSummary | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState('')
 
   useEffect(() => {
     if (activePage !== 'imports') {
@@ -40,6 +34,23 @@ function App() {
       })
       .finally(() => setImportsLoading(false))
   }, [activePage, importsPage])
+
+  useEffect(() => {
+    if (activePage !== 'dashboard') {
+      return
+    }
+
+    setSummaryLoading(true)
+    fetchTransactionsSummary()
+      .then((data) => {
+        setSummary(data)
+        setSummaryError('')
+      })
+      .catch(() => {
+        setSummaryError('Unable to load dashboard summary. Please try again later.')
+      })
+      .finally(() => setSummaryLoading(false))
+  }, [activePage])
 
   const handleUpload = async () => {
     if (!selectedFile) {
@@ -68,7 +79,6 @@ function App() {
       const count = data.successfulRows ?? data.importedCount ?? (data.records ? data.records.length : 0)
       const successText = `${count} records imported successfully`
       setUploadMessage(successText)
-      setTransactions(data.records ?? [])
       setToastMessage(successText)
       setActivePage('transactions')
       setUploading(false)
@@ -121,7 +131,15 @@ function App() {
         {activePage === 'dashboard' && (
           <div className="page-card">
             <h2>Dashboard</h2>
-            <p>Overview for payment operations.</p>
+            {summaryLoading ? (
+              <p>Loading summary…</p>
+            ) : summaryError ? (
+              <p>{summaryError}</p>
+            ) : summary ? (
+              <SummaryCards summary={summary} />
+            ) : (
+              <p>No summary available.</p>
+            )}
           </div>
         )}
 
@@ -141,40 +159,7 @@ function App() {
           </div>
         )}
 
-        {activePage === 'transactions' && (
-          <div className="page-card">
-            <h2>Transactions</h2>
-
-            {transactions.length === 0 ? (
-              <p>No imported transactions yet.</p>
-            ) : (
-              <div className="table-wrapper">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Transaction ID</th>
-                      <th>Amount</th>
-                      <th>Currency</th>
-                      <th>Status</th>
-                      <th>Created At</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {transactions.map((transaction) => (
-                      <tr key={transaction.id}>
-                        <td>{transaction.transactionId}</td>
-                        <td>{transaction.amount}</td>
-                        <td>{transaction.currency}</td>
-                        <td>{transaction.status}</td>
-                        <td>{new Date(transaction.createdAt).toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
+        {activePage === 'transactions' && <TransactionsTable />}
 
         {activePage === 'upload' && (
           <div className="page-card upload-card">

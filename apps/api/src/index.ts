@@ -9,6 +9,8 @@ import { PrismaClient } from "../../../generated/prisma/client.js";
 import { getImportStatus, type ImportStatus } from "./importService.js";
 import { listImports } from "./importRepository.js";
 import { isSupportedCurrency, isValidStatus } from "./importValidation.js";
+import { getTransactionsSummary } from "./transactionsRepository.js";
+import { listTransactions } from "./transactionsRepository.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../..", ".env") });
 
@@ -144,10 +146,18 @@ function parseCsvText(csvText: string): CsvRow[] {
   return lines.slice(1).map((line) => {
     const values = splitCsvLine(line);
 
-    return headers.reduce<CsvRow>((accumulator, header, index) => {
+    const row = headers.reduce<CsvRow>((accumulator, header, index) => {
       accumulator[header] = values[index] ?? "";
       return accumulator;
     }, {});
+
+    // Flag rows whose raw column count doesn't match the header — a shifted
+    // or malformed row shouldn't silently save whatever happens to line up.
+    if (values.length !== headers.length) {
+      row.__columnCountMismatch = String(values.length);
+    }
+
+    return row;
   });
 }
 
@@ -302,6 +312,11 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
       records.forEach((record, index) => {
         const rowNumber = index + 2;
         try {
+          if (record.__columnCountMismatch) {
+            throw new Error(
+              `Row ${rowNumber}: expected ${columns.length} columns, got ${record.__columnCountMismatch}`,
+            );
+          }
           const parsed = validateRow(record, rowNumber);
 
           if (seenInFile.has(parsed.transactionId)) {
@@ -464,6 +479,25 @@ app.get("/api/imports/:id", async (req, res) => {
   res.json(importRecord);
 });
 
+app.get("/api/transactions/summary", async (_req, res) => {
+  const summary = await getTransactionsSummary(prisma, localTransactions);
+  res.json(summary);
+});
+app.get("/api/transactions", async (req, res) => {
+  const query = {
+    page: Number(req.query.page ?? 1),
+    pageSize: Number(req.query.pageSize ?? 10),
+    search: typeof req.query.search === "string" ? req.query.search : undefined,
+    status: typeof req.query.status === "string" ? req.query.status : undefined,
+    currency: typeof req.query.currency === "string" ? req.query.currency : undefined,
+    dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
+    dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
+    sortBy: typeof req.query.sortBy === "string" ? (req.query.sortBy as any) : undefined,
+    sortOrder: typeof req.query.sortOrder === "string" ? (req.query.sortOrder as any) : undefined,
+  };
+  const result = await listTransactions(prisma, localTransactions, query);
+  res.json(result);
+});
 app.listen(port, () => {
   console.log(`API running on http://localhost:${port}`);
 });
