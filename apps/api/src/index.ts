@@ -9,6 +9,7 @@ import { PrismaClient } from "../../../generated/prisma/client.js";
 import { getImportStatus, type ImportStatus } from "./importService.js";
 import { listImports } from "./importRepository.js";
 import { isSupportedCurrency, isValidStatus } from "./importValidation.js";
+import { getTransactionsSummary } from "./transactionsRepository.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../..", ".env") });
 
@@ -464,6 +465,10 @@ app.get("/api/imports/:id", async (req, res) => {
   res.json(importRecord);
 });
 
+app.get("/api/transactions/summary", async (_req, res) => {
+  const summary = await getTransactionsSummary(prisma, localTransactions);
+  res.json(summary);
+});
 app.listen(port, () => {
   console.log(`API running on http://localhost:${port}`);
 });

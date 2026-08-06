@@ -74,3 +74,20 @@ export async function fetchImports(
 
   return response.json();
 }
+
+export type TransactionsSummary = {
+  totalTransactions: number;
+  successfulTransactions: number;
+  failedTransactions: number;
+  pendingTransactions: number;
+  totalProcessedAmount: number;
+  successRate: number;
+};
+
+export async function fetchTransactionsSummary(): Promise<TransactionsSummary> {
+  const response = await fetch("http://localhost:3001/api/transactions/summary");
+  if (!response.ok) {
+    throw new Error("Failed to load dashboard summary");
+  }
+  return response.json();
+}

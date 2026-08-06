@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { fetchImports, type ImportListResponse } from './api.js'
+import { fetchImports, fetchTransactionsSummary, type ImportListResponse, type TransactionsSummary } from './api.js'
 import { ImportsTable } from './ImportsTable.js'
+import { SummaryCards } from './SummaryCards.js'
 
 type TransactionRecord = {
   id: string
@@ -23,6 +24,9 @@ function App() {
   const [importsLoading, setImportsLoading] = useState(false)
   const [importsError, setImportsError] = useState('')
   const [importsPage, setImportsPage] = useState(1)
+  const [summary, setSummary] = useState<TransactionsSummary | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState('')
 
   useEffect(() => {
     if (activePage !== 'imports') {
@@ -40,6 +44,23 @@ function App() {
       })
       .finally(() => setImportsLoading(false))
   }, [activePage, importsPage])
+
+  useEffect(() => {
+    if (activePage !== 'dashboard') {
+      return
+    }
+
+    setSummaryLoading(true)
+    fetchTransactionsSummary()
+      .then((data) => {
+        setSummary(data)
+        setSummaryError('')
+      })
+      .catch(() => {
+        setSummaryError('Unable to load dashboard summary. Please try again later.')
+      })
+      .finally(() => setSummaryLoading(false))
+  }, [activePage])
 
   const handleUpload = async () => {
     if (!selectedFile) {
@@ -121,7 +142,15 @@ function App() {
         {activePage === 'dashboard' && (
           <div className="page-card">
             <h2>Dashboard</h2>
-            <p>Overview for payment operations.</p>
+            {summaryLoading ? (
+              <p>Loading summary…</p>
+            ) : summaryError ? (
+              <p>{summaryError}</p>
+            ) : summary ? (
+              <SummaryCards summary={summary} />
+            ) : (
+              <p>No summary available.</p>
+            )}
           </div>
         )}
 
