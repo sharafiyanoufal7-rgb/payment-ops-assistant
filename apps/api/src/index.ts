@@ -146,10 +146,18 @@ function parseCsvText(csvText: string): CsvRow[] {
   return lines.slice(1).map((line) => {
     const values = splitCsvLine(line);
 
-    return headers.reduce<CsvRow>((accumulator, header, index) => {
+    const row = headers.reduce<CsvRow>((accumulator, header, index) => {
       accumulator[header] = values[index] ?? "";
       return accumulator;
     }, {});
+
+    // Flag rows whose raw column count doesn't match the header — a shifted
+    // or malformed row shouldn't silently save whatever happens to line up.
+    if (values.length !== headers.length) {
+      row.__columnCountMismatch = String(values.length);
+    }
+
+    return row;
   });
 }
 
@@ -304,6 +312,11 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
       records.forEach((record, index) => {
         const rowNumber = index + 2;
         try {
+          if (record.__columnCountMismatch) {
+            throw new Error(
+              `Row ${rowNumber}: expected ${columns.length} columns, got ${record.__columnCountMismatch}`,
+            );
+          }
           const parsed = validateRow(record, rowNumber);
 
           if (seenInFile.has(parsed.transactionId)) {
