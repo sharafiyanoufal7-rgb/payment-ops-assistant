@@ -31,9 +31,13 @@ export function ImportsTable({ importsResponse, onPageChange }: Props) {
               </thead>
               <tbody>
                 {data.map((importSummary) => (
-                  <tr key={importSummary.id}>
+                  <tr key={importSummary.id} data-status={importSummary.status}>
                     <td>{importSummary.filename}</td>
-                    <td>{importSummary.status}</td>
+                    <td>
+                      <span className={`status-badge status-badge--${importSummary.status.toLowerCase()}`}>
+                        {importSummary.status}
+                      </span>
+                    </td>
                     <td>{importSummary.totalRows}</td>
                     <td>{importSummary.successfulRows}</td>
                     <td>{importSummary.failedRows}</td>

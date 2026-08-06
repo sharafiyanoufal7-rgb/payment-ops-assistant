@@ -152,11 +152,15 @@ export function TransactionsTable() {
               </thead>
               <tbody>
                 {response.data.map((t) => (
-                  <tr key={t.id}>
+                  <tr key={t.id} data-status={t.status}>
                     <td>{t.transactionId}</td>
                     <td>{t.amount}</td>
                     <td>{t.currency}</td>
-                    <td>{t.status}</td>
+                    <td>
+                      <span className={`status-badge status-badge--${t.status.toLowerCase()}`}>
+                        {t.status}
+                      </span>
+                    </td>
                     <td>{new Date(t.createdAt).toLocaleString()}</td>
                   </tr>
                 ))}
