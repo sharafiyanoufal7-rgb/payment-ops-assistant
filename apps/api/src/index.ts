@@ -1,11 +1,14 @@
+import { PrismaPg } from "@prisma/adapter-pg";
 import crypto from "node:crypto";
 import path from "node:path";
 import dotenv from "dotenv";
 import cors from "cors";
 import express from "express";
+import multer from "multer";
 import { PrismaClient } from "../../../generated/prisma/client.js";
 import { getImportStatus, type ImportStatus } from "./importService.js";
 import { listImports } from "./importRepository.js";
+import { isSupportedCurrency, isValidStatus } from "./importValidation.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../..", ".env") });
 
@@ -37,9 +40,8 @@ const localTransactions: TransactionInput[] = [];
 
 async function initializePrisma() {
   try {
-    const client = new PrismaClient({
-      accelerateUrl: process.env.DATABASE_URL,
-    } as any);
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
+const client = new PrismaClient({ adapter });
 
     await client.$connect();
     prisma = client;
@@ -66,6 +68,35 @@ type ImportValidationError = {
   rowNumber: number;
   message: string;
 };
+
+// --- multer: replaces the old hand-rolled parseMultipartFile. Enforces
+// file size + .csv type at the boundary instead of trusting raw parsing. ---
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (_req, file, cb) => {
+    const isCsv =
+      file.mimetype === "text/csv" ||
+      file.mimetype === "application/vnd.ms-excel" ||
+      file.originalname.toLowerCase().endsWith(".csv");
+    if (!isCsv) {
+      cb(new Error("Only .csv files are accepted."));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+function handleUpload(req: express.Request, res: express.Response, next: express.NextFunction) {
+  upload.single("file")(req, res, (err) => {
+    if (err) {
+      const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+      res.status(status).json({ message: err.message || "File upload failed." });
+      return;
+    }
+    next();
+  });
+}
 
 function splitCsvLine(line: string): string[] {
   const values: string[] = [];
@@ -132,16 +163,24 @@ function validateRow(record: CsvRow, rowIndex: number): TransactionInput {
     throw new Error(`Row ${rowIndex}: transactionId is required`);
   }
 
-  if (!Number.isFinite(amount)) {
-    throw new Error(`Row ${rowIndex}: amount must be a valid number`);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error(`Row ${rowIndex}: amount must be a positive number`);
   }
 
   if (!currency) {
     throw new Error(`Row ${rowIndex}: currency is required`);
   }
 
+  if (!isSupportedCurrency(currency)) {
+    throw new Error(`Row ${rowIndex}: unsupported currency (${currency})`);
+  }
+
   if (!status) {
     throw new Error(`Row ${rowIndex}: status is required`);
+  }
+
+  if (!isValidStatus(status)) {
+    throw new Error(`Row ${rowIndex}: invalid status (${status})`);
   }
 
   if (Number.isNaN(createdAt.getTime())) {
@@ -151,61 +190,24 @@ function validateRow(record: CsvRow, rowIndex: number): TransactionInput {
   return {
     transactionId,
     amount,
-    currency,
-    status,
+    currency: currency.toUpperCase(),
+    status: status.toUpperCase(),
     failureReason,
     createdAt,
   };
 }
 
-function parseMultipartFile(req: express.Request): Promise<{ fileName: string; buffer: Buffer }> {
-  return new Promise((resolve, reject) => {
-    const contentType = req.headers["content-type"] ?? "";
-    const boundaryMatch = contentType.match(/boundary=(.*)$/i);
-
-    if (!boundaryMatch) {
-      reject(new Error("Expected multipart/form-data upload"));
+async function handleImportUpload(req: express.Request, res: express.Response) {
+  const importRecord = prisma
+  try {
+    if (!req.file) {
+      res.status(400).json({ message: "No file was uploaded. Send it as multipart/form-data under the 'file' field." });
       return;
     }
 
-    const boundary = `--${boundaryMatch[1]}`;
-    const chunks: Buffer[] = [];
+    const fileName = req.file.originalname;
+    const buffer = req.file.buffer;
 
-    req.on("data", (chunk: Buffer | string) => {
-      chunks.push(Buffer.from(chunk));
-    });
-
-    req.on("end", () => {
-      const body = Buffer.concat(chunks).toString("utf8");
-      const headerIndex = body.indexOf('Content-Disposition: form-data; name="file"');
-
-      if (headerIndex < 0) {
-        reject(new Error("No file field found in multipart request"));
-        return;
-      }
-
-      const filenameStart = body.indexOf('filename="', headerIndex) + 'filename="'.length;
-      const filenameEnd = body.indexOf('"', filenameStart);
-      const fileName = body.slice(filenameStart, filenameEnd).trim();
-      const fileStart = body.indexOf("\r\n\r\n", filenameEnd) + 4;
-      const fileEnd = body.indexOf(`\r\n${boundary}--`, fileStart);
-
-      if (fileEnd < 0) {
-        reject(new Error("Unable to extract uploaded CSV content"));
-        return;
-      }
-
-      const buffer = Buffer.from(body.slice(fileStart, fileEnd), "utf8");
-      resolve({ fileName, buffer });
-    });
-
-    req.on("error", (error: Error) => reject(error));
-  });
-}
-
-async function handleImportUpload(req: express.Request, res: express.Response) {
-  try {
-    const { fileName, buffer } = await parseMultipartFile(req);
     const importRecord = prisma
       ? (await prisma.import.create({
           data: {
@@ -281,12 +283,38 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
         message: `Missing required CSV columns: ${missingColumns.join(", ")}`,
       });
     } else {
+      // Duplicate detection: against rows already saved (DB or in-memory),
+      // and against other rows in this same file.
+      const candidateIds = records.map((r) => r.transactionId?.trim()).filter(Boolean);
+      const existingIds = prisma
+        ? new Set(
+            (
+              await prisma.transaction.findMany({
+                where: { transactionId: { in: candidateIds } },
+                select: { transactionId: true },
+              })
+            ).map((t) => t.transactionId),
+          )
+        : new Set(localTransactions.map((t) => t.transactionId));
+
+      const seenInFile = new Set<string>();
+
       records.forEach((record, index) => {
+        const rowNumber = index + 2;
         try {
-          validTransactions.push(validateRow(record, index + 2));
+          const parsed = validateRow(record, rowNumber);
+
+          if (seenInFile.has(parsed.transactionId)) {
+            throw new Error(`Row ${rowNumber}: duplicate transactionId within file (${parsed.transactionId})`);
+          }
+          if (existingIds.has(parsed.transactionId)) {
+            throw new Error(`Row ${rowNumber}: transactionId already exists (${parsed.transactionId})`);
+          }
+          seenInFile.add(parsed.transactionId);
+          validTransactions.push(parsed);
         } catch (error) {
           validationErrors.push({
-            rowNumber: index + 2,
+            rowNumber,
             message: error instanceof Error ? error.message : "Unknown validation error",
           });
         }
@@ -299,7 +327,7 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
     if (prisma) {
       if (validTransactions.length > 0) {
         await prisma.transaction.createMany({
-          data: validTransactions,
+          data: validTransactions.map((t) => ({ ...t, importId: importRecord.id })),
           skipDuplicates: true,
         });
       }
@@ -360,6 +388,19 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
     res.status(201).json({ ...updatedImport, records: responseRecords });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to import transactions";
+
+    if (importRecord) {
+      if (prisma) {
+        await prisma.import.update({
+          where: { id: importRecord.id },
+          data: { status: "FAILED" as ImportStatus },
+        }).catch(() => {});
+      } else {
+        const stored = localImports.find((entry) => entry.id === importRecord.id);
+        if (stored) stored.status = "FAILED" as ImportStatus;
+      }
+    }
+
     res.status(400).json({ message });
   }
 }
@@ -374,8 +415,8 @@ app.get("/health", (_req, res) => {
   });
 });
 
-app.post("/api/imports", handleImportUpload);
-app.post("/transactions/upload", handleImportUpload);
+app.post("/api/imports", handleUpload, handleImportUpload);
+app.post("/transactions/upload", handleUpload, handleImportUpload);
 
 app.get("/api/imports", async (req, res) => {
   const query = {

@@ -12,6 +12,43 @@ datasource db {
   provider = "postgresql"
 }
 
+enum ImportStatus {
+  PROCESSING
+  COMPLETED
+  PARTIALLY_COMPLETED
+  FAILED
+}
+
+model Import {
+  id             String        @id @default(cuid())
+  filename       String
+  status         ImportStatus  @default(PROCESSING)
+  totalRows      Int           @default(0)
+  successfulRows Int           @default(0)
+  failedRows     Int           @default(0)
+  createdAt      DateTime      @default(now())
+
+  transactions   Transaction[]
+  importErrors   ImportError[]
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+// Field is `message` (not `reason`) to match ImportValidationError in index.ts
+model ImportError {
+  id        String   @id @default(cuid())
+  importId  String
+  import    Import   @relation(fields: [importId], references: [id], onDelete: Cascade)
+  rowNumber Int
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([importId])
+}
+
+// Matches TransactionInput in index.ts exactly: no transactionDate/description,
+// createdAt is both the CSV column name AND the record's own timestamp.
 model Transaction {
   id            String   @id @default(cuid())
   transactionId String   @unique
@@ -20,25 +57,11 @@ model Transaction {
   status        String
   failureReason String?
   createdAt     DateTime
-}
 
-model Import {
-  id              String        @id @default(cuid())
-  filename        String
-  status          String
-  totalRows       Int
-  successfulRows  Int
-  failedRows      Int
-  createdAt       DateTime      @default(now())
-  importErrors    ImportError[]
-}
+  importId      String?
+  import        Import?  @relation(fields: [importId], references: [id])
 
-model ImportError {
-  id        String   @id @default(cuid())
-  importId  String
-  rowNumber Int
-  message   String
-  createdAt DateTime @default(now())
-
-  import    Import   @relation(fields: [importId], references: [id], onDelete: Cascade)
+  @@index([importId])
+  @@index([status])
+  @@index([currency])
 }

@@ -1,0 +1,9 @@
+transactionId,amount,currency,status,createdAt,failureReason
+TXN-1001,120.50,USD,SUCCESS,2026-08-01,
+TXN-1002,45.00,EUR,PENDING,2026-08-01,
+TXN-1003,-10.00,USD,SUCCESS,2026-08-02,Negative amount - invalid
+TXN-1004,99.99,XYZ,SUCCESS,2026-08-02,Unsupported currency
+TXN-1005,15.00,SEK,COMPLETE,2026-08-02,Invalid status
+TXN-1006,30.00,GBP,FAILED,not-a-date,Invalid date
+TXN-1001,120.50,USD,SUCCESS,2026-08-01,Duplicate of TXN-1001
+TXN-1007,200.00,NOK,SUCCESS,2026-08-03,
