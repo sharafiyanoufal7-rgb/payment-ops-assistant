@@ -91,3 +91,50 @@ export async function fetchTransactionsSummary(): Promise<TransactionsSummary> {
   }
   return response.json();
 }
+
+export type TransactionRecord = {
+  id: string;
+  transactionId: string;
+  amount: number;
+  currency: string;
+  status: string;
+  failureReason: string | null;
+  createdAt: string;
+};
+
+export type TransactionSortField = "transactionId" | "amount" | "currency" | "status" | "createdAt";
+
+export type TransactionListQuery = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  status?: string;
+  currency?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  sortBy?: TransactionSortField;
+  sortOrder?: "asc" | "desc";
+};
+
+export type TransactionListResponse = PagedResult<TransactionRecord>;
+
+export async function fetchTransactions(
+  query: TransactionListQuery = {},
+): Promise<TransactionListResponse> {
+  const params = new URLSearchParams();
+  if (query.page) params.set("page", String(query.page));
+  if (query.pageSize) params.set("pageSize", String(query.pageSize));
+  if (query.search) params.set("search", query.search);
+  if (query.status) params.set("status", query.status);
+  if (query.currency) params.set("currency", query.currency);
+  if (query.dateFrom) params.set("dateFrom", query.dateFrom);
+  if (query.dateTo) params.set("dateTo", query.dateTo);
+  if (query.sortBy) params.set("sortBy", query.sortBy);
+  if (query.sortOrder) params.set("sortOrder", query.sortOrder);
+  const url = `http://localhost:3001/api/transactions?${params.toString()}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error("Failed to load transactions");
+  }
+  return response.json();
+}

@@ -10,6 +10,7 @@ import { getImportStatus, type ImportStatus } from "./importService.js";
 import { listImports } from "./importRepository.js";
 import { isSupportedCurrency, isValidStatus } from "./importValidation.js";
 import { getTransactionsSummary } from "./transactionsRepository.js";
+import { listTransactions } from "./transactionsRepository.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../..", ".env") });
 
@@ -468,6 +469,21 @@ app.get("/api/imports/:id", async (req, res) => {
 app.get("/api/transactions/summary", async (_req, res) => {
   const summary = await getTransactionsSummary(prisma, localTransactions);
   res.json(summary);
+});
+app.get("/api/transactions", async (req, res) => {
+  const query = {
+    page: Number(req.query.page ?? 1),
+    pageSize: Number(req.query.pageSize ?? 10),
+    search: typeof req.query.search === "string" ? req.query.search : undefined,
+    status: typeof req.query.status === "string" ? req.query.status : undefined,
+    currency: typeof req.query.currency === "string" ? req.query.currency : undefined,
+    dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
+    dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
+    sortBy: typeof req.query.sortBy === "string" ? (req.query.sortBy as any) : undefined,
+    sortOrder: typeof req.query.sortOrder === "string" ? (req.query.sortOrder as any) : undefined,
+  };
+  const result = await listTransactions(prisma, localTransactions, query);
+  res.json(result);
 });
 app.listen(port, () => {
   console.log(`API running on http://localhost:${port}`);
