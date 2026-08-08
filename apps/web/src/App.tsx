@@ -176,11 +176,11 @@ function App() {
             <button type="button" className="upload-button" onClick={handleUpload}>
               {uploading ? 'Uploading…' : 'Upload Button'}
             </button>
+              {uploadMessage && <p className="upload-message">{uploadMessage}</p>}
 
-            {uploadMessage && <p className="upload-message">{uploadMessage}</p>}
-            {toastMessage && <div className="toast success">{toastMessage}</div>}
           </div>
         )}
+        {toastMessage && <div className="toast success">{toastMessage}</div>}
       </section>
     </main>
   )
