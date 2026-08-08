@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (API)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install root dependencies (Prisma tooling)
+        run: npm ci
+
+      - name: Install API dependencies
+        run: npm --prefix apps/api ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run backend tests
+        run: npm --prefix apps/api test
+
+      - name: Type-check and build backend
+        run: npm --prefix apps/api run build
+
+  frontend:
+    name: Frontend (web)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install web dependencies
+        run: npm --prefix apps/web ci
+
+      - name: Lint
+        run: npm --prefix apps/web run lint
+
+      - name: Run frontend tests
+        run: npm --prefix apps/web test
+
+      - name: Type-check and build frontend
+        run: npm --prefix apps/web run build
