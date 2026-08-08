@@ -15,7 +15,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "26"
 
       - name: Install root dependencies (Prisma tooling)
         run: npm ci
@@ -42,7 +42,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "26"
 
       - name: Install web dependencies
         run: npm --prefix apps/web ci
