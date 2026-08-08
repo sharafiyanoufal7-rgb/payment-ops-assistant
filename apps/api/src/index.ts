@@ -8,9 +8,19 @@ import multer from "multer";
 import { PrismaClient } from "../../../generated/prisma/client.js";
 import { getImportStatus, type ImportStatus } from "./importService.js";
 import { listImports } from "./importRepository.js";
-import { isSupportedCurrency, isValidStatus } from "./importValidation.js";
+import { type ImportSortField, type SortOrder } from "./importTypes.js";
 import { getTransactionsSummary } from "./transactionsRepository.js";
 import { listTransactions } from "./transactionsRepository.js";
+import {
+  REQUIRED_COLUMNS,
+  splitCsvLine,
+  parseCsvText,
+  validateRow,
+  findDuplicateTransactionId,
+  type CsvRow,
+  type TransactionInput,
+  type ImportValidationError,
+} from "./csvProcessing.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../..", ".env") });
 
@@ -18,13 +28,6 @@ const app = express();
 const port = Number(process.env.PORT || 3001);
 let prisma: PrismaClient | null = null;
 
-const REQUIRED_COLUMNS = [
-  "transactionId",
-  "amount",
-  "currency",
-  "status",
-  "createdAt",
-] as const;
 
 type StoredImport = {
   id: string;
@@ -56,21 +59,6 @@ const client = new PrismaClient({ adapter });
 
 initializePrisma();
 
-type CsvRow = Record<string, string>;
-type TransactionInput = {
-  transactionId: string;
-  amount: number;
-  currency: string;
-  status: string;
-  failureReason: string | null;
-  createdAt: Date;
-};
-
-type ImportValidationError = {
-  rowNumber: number;
-  message: string;
-};
-
 // --- multer: replaces the old hand-rolled parseMultipartFile. Enforces
 // file size + .csv type at the boundary instead of trusting raw parsing. ---
 const upload = multer({
@@ -100,115 +88,8 @@ function handleUpload(req: express.Request, res: express.Response, next: express
   });
 }
 
-function splitCsvLine(line: string): string[] {
-  const values: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-
-    if (character === '"') {
-      if (inQuotes && line[index + 1] === '"') {
-        current += '"';
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (character === "," && !inQuotes) {
-      values.push(current.trim());
-      current = "";
-      continue;
-    }
-
-    current += character;
-  }
-
-  values.push(current.trim());
-  return values;
-}
-
-function parseCsvText(csvText: string): CsvRow[] {
-  const lines = csvText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length === 0) {
-    return [];
-  }
-
-  const headers = splitCsvLine(lines[0]);
-
-  return lines.slice(1).map((line) => {
-    const values = splitCsvLine(line);
-
-    const row = headers.reduce<CsvRow>((accumulator, header, index) => {
-      accumulator[header] = values[index] ?? "";
-      return accumulator;
-    }, {});
-
-    // Flag rows whose raw column count doesn't match the header — a shifted
-    // or malformed row shouldn't silently save whatever happens to line up.
-    if (values.length !== headers.length) {
-      row.__columnCountMismatch = String(values.length);
-    }
-
-    return row;
-  });
-}
-
-function validateRow(record: CsvRow, rowIndex: number): TransactionInput {
-  const transactionId = record.transactionId?.trim();
-  const currency = record.currency?.trim();
-  const status = record.status?.trim();
-  const amount = Number(record.amount);
-  const createdAt = new Date(record.createdAt);
-  const failureReason = record.failureReason?.trim() || null;
-
-  if (!transactionId) {
-    throw new Error(`Row ${rowIndex}: transactionId is required`);
-  }
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error(`Row ${rowIndex}: amount must be a positive number`);
-  }
-
-  if (!currency) {
-    throw new Error(`Row ${rowIndex}: currency is required`);
-  }
-
-  if (!isSupportedCurrency(currency)) {
-    throw new Error(`Row ${rowIndex}: unsupported currency (${currency})`);
-  }
-
-  if (!status) {
-    throw new Error(`Row ${rowIndex}: status is required`);
-  }
-
-  if (!isValidStatus(status)) {
-    throw new Error(`Row ${rowIndex}: invalid status (${status})`);
-  }
-
-  if (Number.isNaN(createdAt.getTime())) {
-    throw new Error(`Row ${rowIndex}: createdAt must be a valid date`);
-  }
-
-  return {
-    transactionId,
-    amount,
-    currency: currency.toUpperCase(),
-    status: status.toUpperCase(),
-    failureReason,
-    createdAt,
-  };
-}
-
 async function handleImportUpload(req: express.Request, res: express.Response) {
-  const importRecord = prisma
+  let importRecord: StoredImport | undefined;
   try {
     if (!req.file) {
       res.status(400).json({ message: "No file was uploaded. Send it as multipart/form-data under the 'file' field." });
@@ -218,7 +99,7 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
     const fileName = req.file.originalname;
     const buffer = req.file.buffer;
 
-    const importRecord = prisma
+    importRecord = prisma
       ? (await prisma.import.create({
           data: {
             filename: fileName,
@@ -248,7 +129,7 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
     if (!records.length) {
       if (prisma) {
         await prisma.import.update({
-          where: { id: importRecord.id },
+          where: { id: importRecord!.id },
           data: {
             status: "FAILED" as ImportStatus,
             totalRows: 0,
@@ -259,13 +140,13 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
 
         await prisma.importError.createMany({
           data: [{
-            importId: importRecord.id,
+            importId: importRecord!.id,
             rowNumber: 1,
             message: "CSV file is empty",
           }],
         });
       } else {
-        const stored = localImports.find((entry) => entry.id === importRecord.id);
+        const stored = localImports.find((entry) => entry.id === importRecord!.id);
         if (stored) {
           stored.status = "FAILED" as ImportStatus;
           stored.totalRows = 0;
@@ -318,12 +199,9 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
             );
           }
           const parsed = validateRow(record, rowNumber);
-
-          if (seenInFile.has(parsed.transactionId)) {
-            throw new Error(`Row ${rowNumber}: duplicate transactionId within file (${parsed.transactionId})`);
-          }
-          if (existingIds.has(parsed.transactionId)) {
-            throw new Error(`Row ${rowNumber}: transactionId already exists (${parsed.transactionId})`);
+          const duplicateReason = findDuplicateTransactionId(parsed.transactionId, seenInFile, existingIds);
+          if (duplicateReason) {
+            throw new Error(`Row ${rowNumber}: ${duplicateReason}`);
           }
           seenInFile.add(parsed.transactionId);
           validTransactions.push(parsed);
@@ -342,7 +220,7 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
     if (prisma) {
       if (validTransactions.length > 0) {
         await prisma.transaction.createMany({
-          data: validTransactions.map((t) => ({ ...t, importId: importRecord.id })),
+          data: validTransactions.map((t) => ({ ...t, importId: importRecord!.id })),
           skipDuplicates: true,
         });
       }
@@ -354,13 +232,13 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
       if (prisma) {
         await prisma.importError.createMany({
           data: validationErrors.map((error) => ({
-            importId: importRecord.id,
+            importId: importRecord!.id,
             rowNumber: error.rowNumber,
             message: error.message,
           })),
         });
       } else {
-        const stored = localImports.find((entry) => entry.id === importRecord.id);
+        const stored = localImports.find((entry) => entry.id === importRecord!.id);
         if (stored) {
           stored.importErrors.push(...validationErrors);
         }
@@ -371,7 +249,7 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
 
     if (prisma) {
       updatedImport = await prisma.import.update({
-        where: { id: importRecord.id },
+        where: { id: importRecord!.id },
         data: {
           status: getImportStatus(successfulRows, failedRows) as ImportStatus,
           totalRows: records.length,
@@ -380,7 +258,7 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
         },
       });
     } else {
-      const stored = localImports.find((entry) => entry.id === importRecord.id);
+      const stored = localImports.find((entry) => entry.id === importRecord!.id);
       if (stored) {
         stored.status = getImportStatus(successfulRows, failedRows);
         stored.totalRows = records.length;
@@ -407,11 +285,11 @@ async function handleImportUpload(req: express.Request, res: express.Response) {
     if (importRecord) {
       if (prisma) {
         await prisma.import.update({
-          where: { id: importRecord.id },
+          where: { id: importRecord!.id },
           data: { status: "FAILED" as ImportStatus },
         }).catch(() => {});
       } else {
-        const stored = localImports.find((entry) => entry.id === importRecord.id);
+        const stored = localImports.find((entry) => entry.id === importRecord!.id);
         if (stored) stored.status = "FAILED" as ImportStatus;
       }
     }
@@ -438,9 +316,20 @@ app.get("/api/imports", async (req, res) => {
     page: Number(req.query.page ?? 1),
     pageSize: Number(req.query.pageSize ?? 10),
     search: typeof req.query.search === "string" ? req.query.search : undefined,
-    status: typeof req.query.status === "string" ? req.query.status : undefined,
-    sortBy: typeof req.query.sortBy === "string" ? req.query.sortBy : undefined,
-    sortOrder: typeof req.query.sortOrder === "string" ? req.query.sortOrder : undefined,
+    status:
+      typeof req.query.status === "string" &&
+      ["PROCESSING", "COMPLETED", "PARTIALLY_COMPLETED", "FAILED"].includes(req.query.status)
+        ? (req.query.status as ImportStatus)
+        : undefined,
+    sortBy:
+      typeof req.query.sortBy === "string" &&
+      ["createdAt", "filename", "status", "totalRows", "successfulRows", "failedRows"].includes(req.query.sortBy)
+        ? (req.query.sortBy as ImportSortField)
+        : undefined,
+    sortOrder:
+      typeof req.query.sortOrder === "string" && ["asc", "desc"].includes(req.query.sortOrder)
+        ? (req.query.sortOrder as SortOrder)
+        : undefined,
   };
 
   const imports = await listImports(prisma, query);
